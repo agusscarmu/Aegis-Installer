@@ -10,9 +10,6 @@ Si subes este código a GitHub, sigue estos pasos para instalarlo en una PC con 
 ## Pasos de Instalación
 
 1. **Descargar el Agente**:
-   **IMPORTANTE**: No clones todo el repositorio por seguridad.
-   - Solo copia la carpeta `client-agent` a la PC que quieres monitorear.
-   - Puedes comprimir esta carpeta en un `.zip` y llevarla a la otra PC.
 
 2. **Abrir PowerShell (como Administrador)**:
    Haz clic derecho en el botón de Inicio y selecciona **Windows PowerShell (Administrador)** o **Terminal (Admin)**.
