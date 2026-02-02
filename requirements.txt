@@ -2,5 +2,7 @@ requests
 websocket-client
 watchdog
 opencv-python
+numpy
+
 cvzone
 mediapipe
